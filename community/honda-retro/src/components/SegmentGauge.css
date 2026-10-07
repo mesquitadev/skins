@@ -1,0 +1,245 @@
+/* Vertical segmented gauge, Figma 484-6.
+   JS sets on the root: --seg-rgb (fill color as "r,g,b") and .is-low.
+   On each segment: data-depth (0 = top lit "surface", 1–3 below it, off = unlit)
+   and --seg-fade (0 at the bottom of the fill → 1 at its top). */
+
+.seg-gauge {
+  --seg-rgb: 255, 214, 102;
+  --seg-muted: #949080;
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 48px;
+}
+
+/* Every icon sits centered in the same 27×20 box at the bottom of the 24px
+   slot, so tops, bottoms and centers line up across all five gauges. */
+.seg-gauge__icon {
+  height: 24px;
+  width: 27px;
+  padding-top: 4px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--seg-muted);
+  /* Dimmed at rest so the alert states stand out */
+  opacity: 0.45;
+  transition: color 0.3s ease, filter 0.3s ease, opacity 0.3s ease;
+}
+
+.seg-gauge__icon svg {
+  display: block;
+  height: 20px;
+  width: auto;
+}
+
+/* Sizes that keep each glyph inside the box with its own proportions */
+.seg-gauge--temp .seg-gauge__icon svg {
+  width: 14.2px;
+}
+
+.seg-gauge--battery .seg-gauge__icon svg {
+  width: 27px;
+}
+
+.seg-gauge--fuel .seg-gauge__icon svg {
+  width: 19px;
+}
+
+.seg-gauge--lambda .seg-gauge__icon svg {
+  width: 14.1px;
+}
+
+/* The oil can is wide: fit it to the box width instead */
+.seg-gauge--oil .seg-gauge__icon svg {
+  width: 27px;
+  height: 16.2px;
+}
+
+.seg-gauge__bar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.seg-gauge__seg {
+  display: block;
+  width: 23px;
+  height: 6px;
+  border-radius: 2px; /* soft corners so the segments don't look sharp */
+  /* Unlit: kept faint so the lit column stands out on black */
+  background: rgba(255, 255, 255, 0.07);
+  transition:
+    background-color 0.25s ease,
+    opacity 0.25s ease;
+}
+
+/* Lit body: fill color, fading toward the bottom of the column */
+.seg-gauge__seg:not([data-depth='off']) {
+  background: rgb(var(--seg-rgb));
+  opacity: calc(0.14 + 0.86 * var(--seg-fade, 1));
+}
+
+/* The fill's surface: slightly wider/taller segments with a soft glow */
+.seg-gauge__seg[data-depth='0'] {
+  width: 28.94px;
+  height: 7.55px;
+  background: rgb(var(--seg-rgb));
+  box-shadow: 0 0 8px 2px rgba(255, 255, 255, 0.25);
+  opacity: 1;
+}
+
+.seg-gauge__seg[data-depth='1'] {
+  width: 27px;
+  height: 7px;
+}
+
+.seg-gauge__seg[data-depth='2'] {
+  width: 24.92px;
+  height: 6.5px;
+}
+
+.seg-gauge__value {
+  display: flex;
+  align-items: baseline;
+  font-family: 'Digital Numbers', monospace;
+  font-size: 16px;
+  color: var(--seg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.seg-gauge__unit {
+  font-size: 10px;
+  margin-left: 1px;
+}
+
+/* --- Modifiers --- */
+
+/* Fill colors come from JS: temp cold → hot, battery/fuel empty → full.
+   The surface glow takes the fill color and grows with the value
+   (--seg-level, 0–1): faint near empty, wide and bright near full. */
+.seg-gauge__seg[data-depth='0'] {
+  box-shadow:
+    0 0 calc(3px + 5px * var(--seg-level, 0.5)) calc(1px * var(--seg-level, 0.5)) rgba(var(--seg-rgb), calc(0.25 + 0.45 * var(--seg-level, 0.5))),
+    0 0 calc(8px + 18px * var(--seg-level, 0.5)) calc(1px + 3px * var(--seg-level, 0.5)) rgba(var(--seg-rgb), calc(0.06 + 0.3 * var(--seg-level, 0.5)));
+  transition: box-shadow 0.4s ease, background-color 0.25s ease;
+}
+
+/* Fuel: below the low threshold the pump icon lights up and pulses
+   (the fill is already orange there, from the shared ramp) */
+.seg-gauge--fuel.is-low .seg-gauge__icon {
+  color: rgb(var(--seg-rgb));
+  filter: drop-shadow(0 0 4px rgba(var(--seg-rgb), 0.8));
+  opacity: 1;
+  animation: seg-gauge-low 1.6s ease-in-out infinite;
+}
+
+.seg-gauge--fuel.is-low .seg-gauge__value {
+  color: rgb(var(--seg-rgb));
+}
+
+/* Temp: from hotAt (100 °C) the thermometer icon lights up red and pulses */
+.seg-gauge--temp.is-hot .seg-gauge__icon {
+  color: #ff4545;
+  filter: drop-shadow(0 0 4px rgba(255, 69, 69, 0.85));
+  opacity: 1;
+  animation: seg-gauge-low 1.2s ease-in-out infinite;
+}
+
+.seg-gauge--temp.is-hot .seg-gauge__value {
+  color: #ff4545;
+}
+
+@keyframes seg-gauge-low {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.65;
+  }
+}
+
+/* --- Left side: lambda and oil pressure ---
+   Same column as the right gauges, plus a small label under the value. */
+
+.seg-gauge__tag {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font: 600 8px/1 'Rubik', sans-serif;
+  letter-spacing: 0.12em;
+}
+
+/* Lambda: RICH / OK / LEAN pill */
+.seg-gauge__tag[data-s] {
+  padding: 1px 4px;
+  border-radius: 2px;
+  color: #000;
+  background: rgb(255, 214, 102);
+}
+
+.seg-gauge__tag[data-s='rich'] {
+  background: rgb(94, 200, 255);
+}
+
+.seg-gauge__tag[data-s='lean'] {
+  background: rgb(255, 156, 69);
+}
+
+.seg-gauge__tag[data-s='bad'] {
+  background: rgb(255, 69, 69);
+}
+
+/* No data yet (no CAN): no pill */
+.seg-gauge__tag:empty {
+  display: none;
+}
+
+/* Oil: plain unit */
+.seg-gauge__tag--unit {
+  padding: 1px 0;
+  color: #6d6a5f;
+}
+
+/* Peak memory: leanest lambda (above the fill) / lowest oil (inside it) */
+.seg-gauge__seg.is-peak {
+  background: rgb(255, 156, 69);
+  box-shadow: 0 0 6px rgba(255, 156, 69, 0.6);
+  opacity: 1;
+}
+
+.seg-gauge--oil .seg-gauge__seg.is-peak {
+  background: rgb(255, 69, 69);
+  box-shadow: 0 0 6px rgba(255, 69, 69, 0.6);
+}
+
+/* Lean under load / low oil pressure: red fill (from JS), pulsing icon */
+.seg-gauge.is-alert .seg-gauge__icon {
+  color: #ff4545;
+  filter: drop-shadow(0 0 4px rgba(255, 69, 69, 0.85));
+  opacity: 1;
+  animation: seg-gauge-low 1.2s ease-in-out infinite;
+}
+
+.seg-gauge.is-alert .seg-gauge__value {
+  color: #ff4545;
+}
+
+/* --- Dimming: a gauge in its normal range steps back a little --- */
+
+.seg-gauge {
+  position: relative;
+  transition: opacity 0.5s ease;
+}
+
+.seg-gauge.is-calm {
+  opacity: 0.65;
+}

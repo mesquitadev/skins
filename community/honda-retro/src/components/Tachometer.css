@@ -1,0 +1,179 @@
+/* Bar-wave tachometer, Figma 485-7.
+   Geometry: cells 176px tall at the top, bars (max 151px) sitting on y=283,
+   base line at y=290. */
+
+.tach {
+  position: relative;
+  width: var(--tach-w);
+  height: 295px;
+  /* Own stacking context so the layers below are ordered explicitly */
+  isolation: isolate;
+}
+
+/* Layer order, back to front: cells → bars → base line */
+.tach__cells {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+/* --- Cells (one per 1000 RPM) ---
+   Designed for a pure black dash. Each cell is a faint glass panel with a
+   hairline top edge; two overlay layers fade in by opacity (smooth, cheap):
+   ::before = warm trail tint, ::after = glow of the current cell. */
+
+.tach__cell {
+  /* --cell-rgb is set per cell from the bar gradient (cream → yellow → orange → red) */
+  --cell-rgb: 255, 170, 70;
+  position: absolute;
+  top: 0;
+  height: 176px;
+  border-radius: 8px 8px 0 0;
+  overflow: hidden;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012) 55%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+/* Distance from the lit cell: the farther, the dimmer (data-dist 0–4) */
+.tach__cell {
+  transition: opacity 0.3s ease;
+}
+.tach__cell[data-dist='1'] { opacity: 0.8; }
+.tach__cell[data-dist='2'] { opacity: 0.6; }
+.tach__cell[data-dist='3'] { opacity: 0.45; }
+.tach__cell[data-dist='4'] { opacity: 0.35; }
+
+/* Nothing lit yet (below 1000 RPM): the whole row rests dim */
+.tach.is-idle .tach__cell {
+  opacity: 0.3;
+}
+
+/* Redline zone: red tint even when idle */
+.tach__cell--red {
+  background: linear-gradient(to bottom, rgba(255, 45, 70, 0.1), rgba(255, 45, 70, 0.025) 55%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 70, 90, 0.16);
+}
+
+.tach__cell::before,
+.tach__cell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.35s ease-out;
+}
+
+.tach__cell::before {
+  background: linear-gradient(to bottom, rgba(var(--cell-rgb), 0.22), rgba(var(--cell-rgb), 0.05) 60%, transparent);
+}
+
+.tach__cell::after {
+  background:
+    radial-gradient(ellipse 90% 55% at 50% 0%, rgba(var(--cell-rgb), 0.55), rgba(var(--cell-rgb), 0.16) 55%, transparent 100%),
+    linear-gradient(to bottom, rgba(var(--cell-rgb), 0.16), transparent 75%);
+  box-shadow: inset 0 2px 0 rgba(var(--cell-rgb), 0.85);
+  transition-duration: 0.12s; /* lights up fast, fades out slower via ::before */
+}
+
+/* Trail behind the current cell (t1 = right behind it) */
+.tach__cell[data-state='t1']::before { opacity: 0.85; }
+.tach__cell[data-state='t2']::before { opacity: 0.5; }
+.tach__cell[data-state='t3']::before { opacity: 0.28; }
+.tach__cell[data-state='t4']::before { opacity: 0.12; }
+
+.tach__cell[data-state='on']::before,
+.tach__cell[data-state='on']::after {
+  opacity: 1;
+}
+
+.tach__num {
+  position: absolute;
+  z-index: 1;
+  top: 10px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-family: 'Digital Numbers', monospace;
+  font-size: 36px;
+  line-height: 41px;
+  /* Unlit: dim segments that still read on black */
+  color: rgba(255, 255, 255, 0.13);
+  transition: color 0.25s ease, text-shadow 0.25s ease;
+}
+
+.tach__cell--red .tach__num {
+  color: rgba(255, 90, 105, 0.22);
+}
+
+.tach__cell[data-state^='t'] .tach__num {
+  color: rgba(var(--cell-rgb), 0.38);
+}
+
+.tach__cell[data-state='on'] .tach__num {
+  color: #fff3e0;
+  text-shadow: 0 0 6px rgba(var(--cell-rgb), 0.9), 0 0 16px rgba(var(--cell-rgb), 0.5);
+  transition-duration: 0.1s;
+}
+
+.tach__cell--red[data-state='on'] .tach__num {
+  color: #ffe3e6;
+}
+
+/* --- Bars --- */
+
+.tach__bars {
+  position: absolute;
+  z-index: 2;
+  left: 0;
+  top: 132px;
+  width: 100%;
+  height: 151px;
+}
+
+.tach__bar {
+  position: absolute;
+  bottom: 0;
+  width: 9.46px;
+  height: 151px;
+  background: rgb(var(--bar-rgb));
+  transform-origin: bottom center;
+  transform: scaleY(0.0795); /* 12 / 151, resting height */
+  /* Rounded top corners. The bar is drawn at full height and scaled down,
+     so the vertical radius is divided by the scale (--k, set with it in JS)
+     to come out as 2px on screen. */
+  --k: 0.0795;
+  border-radius: 2px 2px 0 0 / calc(2px / var(--k)) calc(2px / var(--k)) 0 0;
+  transition: transform 90ms linear;
+}
+
+/* --- Base line --- */
+
+.tach__base {
+  position: absolute;
+  z-index: 3;
+  left: 0;
+  top: 290px;
+  width: 100%;
+  height: 3.79px;
+}
+
+.tach__base-line {
+  position: absolute;
+  left: 0;
+  height: 100%;
+  background: linear-gradient(to right, rgba(217, 217, 217, 0), rgba(183, 183, 183, 0.54) 75%);
+}
+
+.tach__base-red {
+  position: absolute;
+  right: 0;
+  height: 100%;
+  background: #f42244;
+  opacity: 0.18;
+  transition: opacity 0.12s ease, box-shadow 0.12s ease;
+}
+
+.tach.is-redline .tach__base-red {
+  opacity: 1;
+  box-shadow: 0 0 7.7px 1px #f42144;
+}

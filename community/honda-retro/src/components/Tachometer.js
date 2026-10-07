@@ -1,0 +1,313 @@
+import "./Tachometer.css";
+
+// Bar-wave tachometer from Figma 485-7.
+// - A row of bars whose "wave" (a bump) follows the RPM and grows as you rev.
+// - One cell per 1000 RPM behind it, lighting up as the needle passes.
+// - A base line that turns red past the redline (8000 RPM by default).
+
+const WIDTH = 928; // px, drawing width of bars, cells and base line
+const BARS = 53;
+const BAR_MAX = 151; // px, tallest bar
+const BAR_MIN = 12; // px, resting bar
+// Height steps from the Figma frame: bars move in these increments,
+// which gives the stepped, LED-like look of the design.
+const STEPS = [12, 18.5, 34.2, 62.7, 85.5, 114, 138.7, 151, 165, 178];
+// The last two steps are an "overboost": only reachable with the throttle
+// floored (TPS), so the central bars can poke above the normal top.
+const TOP = 7; // index of 151, the normal maximum
+
+// Horizontal color gradient across the bars (Figma colors). The stops are
+// placed relative to the red zone start `z` (0–1 across the width), so the
+// wave is already reddish when it reaches the redline cell, whatever rpmM is.
+const barStops = (z) => [
+  [0, [251, 253, 199]], // #fbfdc7
+  [z * 0.42, [255, 214, 102]], // #ffd666
+  [z * 0.72, [255, 156, 69]], // #ff9c45
+  [z * 0.92, [250, 80, 60]], // red-orange, just before the red zone
+  [z, [244, 33, 68]], // #f42144
+  [1, [244, 33, 68]],
+];
+
+const mix = (a, b, t) => a.map((x, i) => Math.round(x + (b[i] - x) * t));
+const colorAt = (stops, r) => {
+  for (let i = 1; i < stops.length; i++) {
+    const [p1, c1] = stops[i];
+    if (r <= p1) {
+      const [p0, c0] = stops[i - 1];
+      return mix(c0, c1, (r - p0) / Math.max(1e-6, p1 - p0));
+    }
+  }
+  return stops[stops.length - 1][1];
+};
+
+const redlineFor = (rpmM, redline) =>
+  Math.min(redline ?? 8000, (rpmM - 1) * 1000);
+
+/**
+ * @param {number} rpmM  max RPM in thousands (DASH_OPTIONS.rpmM, 6–10)
+ * @param {number} [redline]  RPM where the base line turns red (default 8000)
+ */
+export function Tachometer({ rpmM = 8, redline } = {}) {
+  const red = redlineFor(rpmM, redline);
+  // Red zone starts at the cell that lights at the redline (cell 8 for 8000),
+  // which sits one slot left of its thousand on the axis
+  const redCell = red / 1000;
+  const redX = ((redCell - 1) / rpmM) * WIDTH;
+  const stops = barStops(redX / WIDTH);
+
+  // Cell k (1…rpmM) sits over the (k-1)000–k000 stretch of the bars and
+  // lights up once the RPM passes k000, like a counter filling in
+  // Each cell takes the bar gradient's color at its position (cream → orange);
+  // cells in the red zone glow red
+  const cells = Array.from({ length: rpmM }, (_, i) => {
+    const inRed = i + 1 >= redCell;
+    const rgb = inRed ? "255,45,70" : colorAt(stops, (i + 0.5) / rpmM).join(",");
+    return `
+      <div class="tach__cell${inRed ? " tach__cell--red" : ""}"
+        style="left:${(i / rpmM) * WIDTH}px;width:${WIDTH / rpmM - 7}px;--cell-rgb:${rgb}">
+        <span class="tach__num">${i + 1}</span>
+      </div>`;
+  }).join("");
+
+  const bars = Array.from({ length: BARS }, (_, i) => {
+    const pitch = WIDTH / BARS;
+    const rgb = colorAt(stops, (i + 0.5) / BARS).join(",");
+    return `<span class="tach__bar" style="left:${i * pitch + (pitch - 9.46) / 2}px;--bar-rgb:${rgb}"></span>`;
+  }).join("");
+
+  return `
+    <div id="tachometer" class="tach is-idle" style="--tach-w:${WIDTH}px">
+      <div class="tach__cells">${cells}</div>
+      <div class="tach__bars">${bars}</div>
+      <div class="tach__base">
+        <span class="tach__base-line" style="width:${redX - 8}px"></span>
+        <span class="tach__base-red" style="left:${redX}px"></span>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * Wave behaviours (option `wave`):
+ * - "classic": a symmetric bump that chases the RPM with a little inertia.
+ * - "trail":   steep leading edge and a long tail behind it that stretches
+ *              while you accelerate, like a motion streak.
+ * - "spring":  the crest is on a spring, so a hard rev overshoots a touch
+ *              and settles, and the wave swells with its own speed.
+ * - "pulse":   while accelerating, ripples peel off the crest and run
+ *              backwards along the tail, like exhaust pulses.
+ */
+export const WAVES = ["classic", "trail", "spring", "pulse"];
+
+/**
+ * Call once after the HTML is mounted.
+ * Returns an { update(rpm, now, tps) } controller to use in the RAF loop.
+ * `tps` (throttle position 0–100, CAN only) is optional: with it the wave
+ * reacts to how hard the driver presses; without it, to RPM changes only.
+ */
+export function createTachometerController({ rpmM = 8, redline, wave = "pulse" } = {}) {
+  const root = document.getElementById("tachometer");
+  const bars = Array.from(root.querySelectorAll(".tach__bar"));
+  const cells = Array.from(root.querySelectorAll(".tach__cell"));
+  const maxRpm = rpmM * 1000;
+  const red = redlineFor(rpmM, redline);
+
+  const barLevel = new Array(BARS).fill(-1);
+  const levels = new Array(BARS).fill(0);
+  const cellState = new Array(cells.length).fill("");
+  let redOn = null;
+  let wasIdle = null;
+
+  // Smoothed state: the wave chases the RPM with a little inertia,
+  // and swells while you are accelerating.
+  let pos = 0; // smoothed rpm ratio 0..1
+  let vel = 0; // pos per ms (spring)
+  let surge = 0; // 0..1, extra amplitude from acceleration
+  let phase = 0; // ripple phase (pulse)
+  let throttle = 0; // smoothed TPS 0..1 (stays 0 without TPS)
+  let idleT = 0; // ms, clock for the idle throb
+  let idleMix = 0; // 0..1, how much the idle animation shows
+  let lastNow = null;
+  let lastRpm = 0;
+
+  // Idle: low, uneven throb of the crest plus vibration rings running out
+  // from it along the bars, like a running engine at rest
+  const idleRings = (d) => {
+    if (idleMix < 0.01) return 0;
+    const f = lastRpm / 420; // Hz, ~2 Hz at 900 RPM
+    const x = Math.abs(d);
+    const ring = Math.max(0, Math.cos(x * 0.9 - idleT * 0.0062 * f * Math.PI));
+    return idleMix * 0.2 * ring ** 4 * Math.exp(-x / 9);
+  };
+
+  const profile = (d, sigma, amp) => {
+    // d: distance from the crest in bars (negative = behind it)
+    if (wave === "trail") {
+      const s = d < 0 ? sigma * (1.25 + 2.2 * surge) : sigma * 0.6;
+      return amp * Math.exp(-0.5 * (d / s) ** 2);
+    }
+    const base = amp * Math.exp(-0.5 * (d / sigma) ** 2);
+    if (wave === "pulse" && d < 0 && surge > 0.02) {
+      // Ripples travelling backwards, fading with distance
+      const ripple = Math.max(0, Math.cos((d + phase) * 0.85));
+      return base + Math.min(1, surge * 1.4) * 0.55 * ripple ** 3 * Math.exp(d / 14);
+    }
+    return base;
+  };
+
+  return {
+    update(rawRpm, now, rawTps) {
+      const rpm = Math.max(0, Math.min(maxRpm, Number(rawRpm) || 0));
+      // Throttle 0..1, or null when TPS isn't available (no ECU over CAN)
+      const hasTps = rawTps != null && rawTps !== "" && !isNaN(rawTps);
+      const tpsTarget = hasTps ? Math.max(0, Math.min(1, Number(rawTps) / 100)) : 0;
+      const target = rpm / maxRpm;
+      const dt = lastNow === null ? 16 : Math.max(0, Math.min(100, now - lastNow));
+      lastNow = now;
+      throttle += (tpsTarget - throttle) * (1 - Math.exp(-dt / 80));
+
+      if (wave === "spring") {
+        // Under-damped spring, integrated in small steps for stability
+        const w = 0.018; // rad/ms
+        const zeta = 0.35;
+        for (let t = dt; t > 0; t -= 8) {
+          const h = Math.min(8, t);
+          vel += (w * w * (target - pos) - 2 * zeta * w * vel) * h;
+          pos += vel * h;
+        }
+      } else {
+        // Rise fast, fall a bit slower: revving feels snappy, lifting off feels weighty.
+        // More throttle makes it snappier still (70 ms → ~45 ms at full throttle)
+        const tau = target > pos ? 70 * (1.15 - 0.5 * throttle) : 140;
+        pos += (target - pos) * (1 - Math.exp(-dt / tau));
+      }
+      const p = Math.max(0, Math.min(1, pos));
+
+      const accel = (rpm - lastRpm) / Math.max(1, dt); // rpm per ms
+      lastRpm = rpm;
+      // With TPS, how hard you press scales the swell, and a floored pedal keeps
+      // the wave swollen even when the RPM levels off; without it, RPM gain only
+      const fromAccel = Math.max(0, Math.min(1, accel / 8));
+      const surgeTarget = hasTps
+        ? Math.min(1, fromAccel * (0.4 + 1.2 * throttle) + Math.max(0, throttle - 0.5) * 0.9)
+        : fromAccel;
+      surge += (surgeTarget - surge) * (1 - Math.exp(-dt / (surgeTarget > surge ? 60 : 260)));
+      phase += dt * 0.012 * (1 + 2 * p) * (1 + throttle);
+
+      // Idle shows between ~600 and ~1500 RPM while not revving; 0 RPM stays flat
+      const smooth = (a, b, x) => {
+        const k = Math.max(0, Math.min(1, (x - a) / (b - a)));
+        return k * k * (3 - 2 * k);
+      };
+      const idleTarget = smooth(400, 700, rpm) * (1 - smooth(1400, 1900, rpm)) * (1 - Math.min(1, surge * 4));
+      idleMix += (idleTarget - idleMix) * (1 - Math.exp(-dt / 250));
+      idleT += dt;
+
+      // Wave shape: grows taller and wider with RPM, plus the acceleration surge
+      // Flat at 0 RPM; the base lift fades in over the first ~1200 RPM (idle shows a small wave)
+      const lift = Math.min(1, p / 0.12);
+      const swell = wave === "spring" ? Math.min(0.3, Math.abs(vel) * 400) : 0.15 * surge;
+      // The wave's height grows with the RPM on an ease-in curve, like an engine
+      // pulling harder as it climbs: modest at low RPM, rising faster toward the
+      // top, which it only reaches at max RPM (10 000 with rpmM = 10). The
+      // acceleration swell can add a little, never far above that curve.
+      const rise = p ** 1.8;
+      const ceiling = 0.2 + 0.8 * rise;
+      let amp = Math.min(1, ceiling + 0.08, 0.25 * lift * lift * (3 - 2 * lift) + 0.75 * rise + swell);
+      if (hasTps) {
+        // Off the throttle the wave sits a little lower, on it slightly taller
+        amp = Math.min(1, ceiling + 0.08, amp * (0.9 + 0.15 * throttle));
+      }
+      if (idleMix > 0.01) {
+        // Two beating sines give an uneven, lumpy idle rather than a clean pulse
+        const f = rpm / 420;
+        const w = (idleT / 1000) * 2 * Math.PI * f;
+        amp *= 1 + idleMix * 0.3 * (0.6 * Math.sin(w) + 0.4 * Math.sin(2.03 * w + 1.3));
+      }
+      // Overboost: with the pedal past ~70% (TPS only) the wave turns into a
+      // spike: the shoulders narrow and the 3 central bars stand out; near max
+      // RPM they go above the normal 151px top, the crest up to 178px
+      const boost = hasTps ? Math.max(0, Math.min(1, (throttle - 0.7) / 0.3)) * Math.min(1, amp) : 0;
+      // Narrow at low RPM so the wave reads as a peak, not a plateau
+      const stretch = wave === "spring" ? Math.min(2, Math.abs(vel) * 3500) : 0;
+      const sigma = (1.5 + 3.0 * p + 1.2 * surge + stretch) * (1 - 0.4 * boost); // in bars
+      // Crest sits over the lit cell: cell k spans the k-th slot and lights
+      // from k000 RPM, so the crest is one slot (1000 RPM) behind the raw ratio
+      const center = (p - 1 / rpmM) * BARS - 0.5;
+
+      for (let i = 0; i < BARS; i++) {
+        const h = BAR_MIN + (BAR_MAX - BAR_MIN) * (profile(i - center, sigma, amp) + idleRings(i - center));
+        let level = 0;
+        while (level < TOP && STEPS[level + 1] <= h) level++;
+        levels[i] = level;
+      }
+      const crest = Math.round(center);
+      // How tall the spike may get also depends on the RPM: two steps above the
+      // line for the current RPM, above the normal top only near max RPM, and
+      // the full 178px only at the very top of the range
+      const levelOf = (h) => {
+        let l = 0;
+        while (l < STEPS.length - 1 && STEPS[l + 1] <= h) l++;
+        return l;
+      };
+      const spikeCap = Math.min(
+        levelOf(BAR_MIN + 166 * rise) + 2,
+        p >= 0.97 ? TOP + 2 : p >= 0.88 ? TOP + 1 : TOP,
+      );
+      if (boost > 0.15 && levels[crest] >= 3) {
+        // Spike: the crest jumps 1–2 steps, its two neighbours sit one step
+        // below it, and everything else stays at least two steps under it
+        // never lower than the crest would be without the pedal
+        const peak = Math.max(levels[crest], boost > 0.6 ? spikeCap : Math.min(spikeCap, levels[crest] + 1));
+        for (let i = 0; i < BARS; i++) {
+          const d = Math.abs(i - crest);
+          if (d === 0) levels[i] = peak;
+          else if (d === 1) levels[i] = Math.max(0, peak - 1);
+          else levels[i] = Math.min(levels[i], Math.max(0, peak - 2));
+        }
+      } else {
+        // The bar at the crest always stands one step above its neighbours
+        const side = Math.max(levels[crest - 1] ?? 0, levels[crest + 1] ?? 0);
+        if (levels[crest] > 0 && levels[crest] <= side && side < TOP) {
+          levels[crest] = side + 1;
+        }
+      }
+
+      for (let i = 0; i < BARS; i++) {
+        if (levels[i] !== barLevel[i]) {
+          barLevel[i] = levels[i];
+          const k = STEPS[levels[i]] / BAR_MAX;
+          bars[i].style.transform = `scaleY(${k})`;
+          bars[i].style.setProperty("--k", k);
+        }
+      }
+
+      // Cells: the last thousand passed glows, the ones before it fade out behind,
+      // and every cell dims with its distance from the lit one (both sides)
+      const current = Math.floor(rpm / 1000); // 0 below 1000 RPM: nothing lit
+      const idle = current === 0;
+      if (idle !== wasIdle) {
+        wasIdle = idle;
+        root.classList.toggle("is-idle", idle);
+      }
+      for (let i = 0; i < cells.length; i++) {
+        const k = i + 1;
+        const state =
+          k === current ? "on" : k < current ? `t${Math.min(4, current - k)}` : "";
+        const dist = idle ? "" : String(Math.min(4, Math.abs(k - current)));
+        const key = state + "|" + dist;
+        if (key !== cellState[i]) {
+          cellState[i] = key;
+          cells[i].dataset.state = state;
+          cells[i].dataset.dist = dist;
+        }
+      }
+
+      const on = rpm >= red;
+      if (on !== redOn) {
+        redOn = on;
+        root.classList.toggle("is-redline", on);
+      }
+    },
+  };
+}

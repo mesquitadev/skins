@@ -1,0 +1,140 @@
+/* Dash layout, 1280×480 on black. Positions come from the full-dash Figma
+   frame (472-3), relative to the frame. */
+
+body,
+html,
+#container {
+  background: #000;
+}
+
+.slot {
+  position: absolute;
+}
+
+/* Figma: tachometer cells at y 101 (base line at y 391). Moved from x 116
+   to 156 to make room for the lambda/oil column on the left. */
+.slot--tach {
+  left: 156px;
+  top: 101px;
+}
+
+/* Figma: battery/temp/fuel columns at y 98; x 1108 keeps them 24px from the
+   tachometer and 20px from the right edge */
+.slot--gauges {
+  left: 1108px;
+  top: 98px;
+  display: flex;
+  gap: 4px;
+}
+
+/* Lambda + oil pressure, mirroring the right gauges */
+.slot--left-gauges {
+  left: 32px;
+  top: 98px;
+  display: flex;
+  gap: 4px;
+}
+
+/* 4×2 warning-light grid under the tachometer, y 404 */
+.slot--lamps {
+  left: 156px;
+  top: 404px;
+}
+
+/* Figma: HONDA logo centered on top, x 543 y 27, 197×24.
+   The SVG is exported from Figma into icons/honda-logo.svg. */
+.slot--logo {
+  left: 543px;
+  top: 27px;
+  width: 197px;
+  height: 24px;
+}
+
+.slot--logo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* Pressed-metal edge: a dark lip under the letters and a faint top light */
+  filter: drop-shadow(0 1px 0 rgba(0, 0, 0, 0.85)) drop-shadow(0 -0.5px 0 rgba(255, 255, 255, 0.25));
+}
+
+/* A narrow reflection that glides slowly across the chrome now and then.
+   Masked by the logo itself, so it only lights the letters. */
+.logo-sheen {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  -webkit-mask: url('icons/honda-logo.svg') center / 100% 100% no-repeat;
+  mask: url('icons/honda-logo.svg') center / 100% 100% no-repeat;
+  background: linear-gradient(105deg, transparent 40%, rgba(255, 255, 255, 0.9) 50%, transparent 60%) no-repeat;
+  background-size: 250% 100%;
+  background-position: 150% 0;
+  mix-blend-mode: screen;
+  /* 20 s cycle: rests ~17 s, then a slow 3 s pass */
+  animation: logo-sheen 20s ease-in-out 3s infinite;
+}
+
+@keyframes logo-sheen {
+  0%,
+  85% {
+    background-position: 150% 0;
+  }
+  100% {
+    background-position: -50% 0;
+  }
+}
+
+/* Figma: turn chevrons flank the logo at 52×24, 50px from it on each side.
+   The SVG has glow padding around the chevrons, so the box is offset. */
+.slot--turn-left,
+.slot--turn-right {
+  top: 22px;
+}
+
+.slot--turn-left {
+  left: 440px;
+}
+
+.slot--turn-right {
+  left: 788px;
+}
+
+.slot--turn-left .turn-signal svg,
+.slot--turn-right .turn-signal svg {
+  width: 55px;
+  height: 35px;
+}
+
+/* Speed, bottom right: 15% larger than the Figma 76×47, with the end of
+   "km/h" on the tachometer's right edge (x 1086) */
+.slot--speed {
+  left: 942.5px;
+  top: 402px;
+  transform: scale(0.759);
+  transform-origin: top left;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+/* Sizes are before the 0.759 scale: ~14px on screen.
+   Nudged down so its letters sit on the same line as the digits' bottom
+   segments (the 7-segment glyphs reach below the text baseline). */
+.speed-unit {
+  position: relative;
+  top: var(--speed-unit-drop, 6px);
+  font-family: 'Digital Numbers', monospace;
+  font-size: 18px;
+  letter-spacing: 1px;
+  color: #949080;
+  opacity: 0.6;
+}
+
+/* Roller odometer, bottom center (approved preview). Kept dim: it's
+   reference info, not something to read while driving. */
+.slot--odo {
+  left: 640px;
+  top: 417px;
+  transform: translateX(-50%);
+  opacity: 0.5;
+}
